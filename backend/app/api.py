@@ -150,7 +150,7 @@ def get_market_detail(market_id: int, db: Session = Depends(get_db)):
         from .amm_state import get_amm_state
         min_val = market.outcome_min or 5e6
         max_val = market.outcome_max or 1e12
-        get_amm_state(market_id, N=21, min_val=min_val, max_val=max_val)
+        get_amm_state(market_id, N=21, min_val=min_val, max_val=max_val, prior=None)
     except Exception as e:
         print(f"Warning: Could not initialize AMM state: {e}")
     
@@ -169,65 +169,49 @@ def get_market_detail(market_id: int, db: Session = Depends(get_db)):
 
 # --- QUOTE API ---
 from . import lmsr
-from .amm_state import get_amm_state, insert_knot
+from .amm_state import get_amm_state, insert_knot, get_quotes_for_bucket, px
 from .threshold_contracts import payoff_vector, price_per_contract
 from .implied_distribution import lmsr_lognormal_pareto
 from .lmsr_bid_ask import lmsr_bid_ask
-from .amm_orders import place_order, set_amm_state, get_amm_state
+from .amm_orders import place_order, set_amm_state
 import math
 
 @router.get("/markets/{market_id}/bid_ask")
 def get_market_bid_ask(market_id: int, db: Session = Depends(get_db)):
     """
-    Returns for each knot: value, mid, bid, ask using LMSR AMM state for the market.
-    Initializes AMM state if it doesn't exist.
+    Returns for each knot: value, mid, bid, ask, liquidity using AMM helpers. Robust to overflow/NaN.
     """
     market = db.query(models.Market).filter(models.Market.id == market_id).first()
     if not market:
         raise HTTPException(status_code=404, detail="Market not found")
-    
     min_val = market.outcome_min or 5e6
-    max_val = market.outcome_max or 1e12  # Fallback if not set
-    N = 21  # Number of buckets
-    
+    max_val = market.outcome_max or 1e12
+    N = 21
     try:
-        # This will initialize AMM state if it doesn't exist
         state = get_amm_state(market_id, N, min_val, max_val)
-        if not state or 'knots' not in state:
-            raise ValueError("Invalid AMM state")
-            
         knots = state['knots']
-        b = state['b']
-        q = [k['q'] for k in knots]
-        
-        # Ensure we have valid bid/ask data
-        if not q or not all(isinstance(x, (int, float)) for x in q):
-            q = [0.0] * len(knots)
-            
-        ba = lmsr_bid_ask(q, b)
-        
-        # Ensure we have valid bid/ask values
         result = []
         for i, k in enumerate(knots):
+            quote = get_quotes_for_bucket(state, i, size=1.0)
             result.append({
-                'value': k['x'], 
-                'mid': ba[i].get('mid', 0.0) if i < len(ba) else 0.0,
-                'bid': ba[i].get('bid', 0.0) if i < len(ba) else 0.0,
-                'ask': ba[i].get('ask', 0.0) if i < len(ba) else 0.0
+                'value': k['x'],
+                'mid': quote.get('mid', 0.0),
+                'bid': quote.get('bid', 0.0),
+                'ask': quote.get('ask', 0.0),
+                'liquidity': quote.get('liquidity', 0.0),
+                'error': quote.get('error', None)
             })
-            
         return result
-        
     except Exception as e:
         print(f"Error in get_market_bid_ask: {e}")
-        # Return empty bid/ask data if there's an error
         return [{
             'value': 0.0,
             'mid': 0.0,
             'bid': 0.0,
-            'ask': 0.0
+            'ask': 0.0,
+            'liquidity': 0.0,
+            'error': str(e)
         }]
-    return result
 
 from fastapi import Body
 
@@ -285,7 +269,7 @@ def get_market_amm_state(market_id: int):
     N = 21
     min_val = 5e6
     max_val = 1e12
-    state = get_amm_state(market_id, N, min_val, max_val)
+    state = get_amm_state(market_id, N, min_val, max_val, prior=None)
     q = [k['q'] for k in state['knots']]
     b = state['b']
     return {'q': q, 'b': b}
@@ -293,6 +277,49 @@ def get_market_amm_state(market_id: int):
 # Unified quote_and_trade endpoint for threshold contracts
 from fastapi import Body
 from datetime import datetime
+
+from .play_wallet import PlayWallet
+from decimal import Decimal
+import time
+from fastapi import Query
+
+FAUCET_LIMIT = 1000  # Max faucet per call
+FAUCET_INTERVAL = 60  # seconds between allowed faucet requests per user
+faucet_last = {}  # {user_id: last_request_time}
+
+@router.get("/wallet/balance")
+def get_wallet_balance(user_id: int = Query(...), db: Session = Depends(get_db)):
+    wallet = PlayWallet()
+    bal = wallet.get_balance(db, str(user_id))
+    return {"user_id": user_id, "balance": float(bal)}
+
+@router.get("/faucet")
+def faucet(user_id: int = Query(...), amt: float = Query(...), db: Session = Depends(get_db)):
+    now = time.time()
+    last = faucet_last.get(user_id, 0)
+    if now - last < FAUCET_INTERVAL:
+        raise HTTPException(status_code=429, detail=f"Faucet cooldown: wait {int(FAUCET_INTERVAL - (now - last))}s")
+    if amt > FAUCET_LIMIT:
+        raise HTTPException(status_code=400, detail=f"Max faucet per call: {FAUCET_LIMIT}")
+    wallet = PlayWallet()
+    wallet.credit(db, str(user_id), Decimal(str(amt)), ref="faucet")
+    faucet_last[user_id] = now
+    return {"user_id": user_id, "credited": amt}
+
+@router.post("/depositIntent")
+def deposit_intent(user_id: int = Body(...), db: Session = Depends(get_db)):
+    # Stub: return dummy on-chain address
+    return {"user_id": user_id, "deposit_address": f"0xDUMMY{user_id:04d}"}
+
+@router.post("/withdraw")
+def withdraw(user_id: int = Body(...), amt: float = Body(...), db: Session = Depends(get_db)):
+    wallet = PlayWallet()
+    try:
+        wallet.debit(db, str(user_id), Decimal(str(amt)), ref="withdraw")
+        # Log intent only, no real transfer
+        return {"user_id": user_id, "withdrawn": amt, "status": "intent logged"}
+    except Exception as e:
+        raise HTTPException(status_code=402, detail=f"Insufficient balance: {e}")
 
 @router.post("/markets/{market_id}/quote_and_trade")
 def quote_and_trade(
@@ -310,37 +337,48 @@ def quote_and_trade(
     if not market:
         raise HTTPException(status_code=404, detail="Market not found")
     min_val = market.outcome_min or 5e6
-    max_val = market.outcome_max or lmsr.LOG_BUCKET_MAX
+    max_val = market.outcome_max or 1e12
     N = 21
     state = get_amm_state(market_id, N, min_val, max_val)
     insert_knot(state, val)
     knots = state['knots']
     b = state['b']
     q = [k['q'] for k in knots]
-    # Construct payoff vector
-    w = payoff_vector(knots, val, dir)
-    # Current prices
-    def lmsr_cost_sparse(q, b):
-        max_q = max(q)
-        sum_exp = sum(math.exp((qk - max_q) / b) for qk in q)
-        return b * (math.log(sum_exp) + max_q / b)
-    def lmsr_prices_sparse(q, b):
-        max_q = max(q)
-        exp_q = [math.exp((qk - max_q) / b) for qk in q]
-        sum_exp = sum(exp_q)
-        return [e / sum_exp for e in exp_q]
-    prices = lmsr_prices_sparse(q, b)
-    p = price_per_contract(prices, w)
-    # Implied scenario payouts
-    scenario = lmsr_lognormal_pareto(prices, knots, val)
-    # Quote only (no trade): return price and scenario
+    # Find bucket index for val
+    k = next((i for i, knot in enumerate(knots) if abs(knot['x'] - val) < 1e-6), None)
+    if k is None:
+        raise HTTPException(status_code=400, detail="Could not find or insert bucket for valuation")
+    # Get quote for this bucket
+    quote = get_quotes_for_bucket(state, k, size=n)
+    # If math error, return error
+    if 'error' in quote and quote['error']:
+        return {"error": quote['error'], "bid": 0, "mid": 0, "ask": 0, "liquidity": 0}
+    # Quote only (no trade)
     if not execute:
-        return {"price": p, "b": b, "N": len(knots), "scenario": scenario, "probs": prices}
-    # Trade: Δq = n · w
+        return {
+            "bid": quote['bid'],
+            "mid": quote['mid'],
+            "ask": quote['ask'],
+            "liquidity": quote['liquidity'],
+            "bucket": k
+        }
+    # Trade: update q and wallet
     q_before = q[:]
-    delta_q = [n * wk for wk in w]
-    q_after = [qk + dqk for qk, dqk in zip(q, delta_q)]
-    payment = lmsr_cost_sparse(q_after, b) - lmsr_cost_sparse(q_before, b)
+    # For this MVP, buy = ask, sell = bid, size = n
+    if dir == 'buy':
+        q_after = [qk + (n if i == k else 0) for i, qk in enumerate(q)]
+        payment = quote['ask']
+    elif dir == 'sell':
+        q_after = [qk - (n if i == k else 0) for i, qk in enumerate(q)]
+        payment = quote['bid']
+    else:
+        raise HTTPException(status_code=400, detail="Invalid direction (must be 'buy' or 'sell')")
+    # Wallet settlement: debit user for payment, log tx
+    wallet = PlayWallet()
+    try:
+        wallet.debit(db, str(user_id), Decimal(str(payment)), ref=f"market:{market_id}|trade:{val}|{dir}|{n}")
+    except Exception as e:
+        raise HTTPException(status_code=402, detail=f"Insufficient balance: {e}")
     # Update AMM state
     for i in range(len(knots)):
         knots[i]['q'] = q_after[i]
@@ -355,7 +393,15 @@ def quote_and_trade(
     db.add(db_bet)
     db.commit()
     db.refresh(db_bet)
-    return {"price": p, "payment": payment, "bet_id": db_bet.id, "b": b, "N": len(knots)}
+    return {
+        "bid": quote['bid'],
+        "mid": quote['mid'],
+        "ask": quote['ask'],
+        "liquidity": quote['liquidity'],
+        "bucket": k,
+        "payment": float(payment),
+        "bet_id": db_bet.id
+    }
 
 @router.get("/bets/", response_model=list[schemas.BetRead])
 def list_bets(db: Session = Depends(get_db)):

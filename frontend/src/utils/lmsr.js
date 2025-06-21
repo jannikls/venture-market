@@ -14,6 +14,66 @@ export const LOG_BUCKET_BASE = 1e6; // Start at $1M
 export const LOG_BUCKET_MAX = 1e12; // $1T
 
 /**
+ * Format a value as a compact currency string (e.g., 1.5M, 2.3B)
+ * @param {number} value - The value to format
+ * @returns {string} Formatted string
+ */
+export function formatCurrency(value) {
+  if (value >= 1e9) return `$${(value / 1e9).toFixed(1)}B`;
+  if (value >= 1e6) return `$${(value / 1e6).toFixed(1)}M`;
+  if (value >= 1e3) return `$${(value / 1e3).toFixed(0)}K`;
+  return `$${value.toFixed(0)}`;
+}
+
+/**
+ * Get plain-language description for a bucket
+ * @param {{low: number, high: number}} bucket - The bucket to describe
+ * @returns {string} Human-readable description
+ */
+export function getBucketDescription(bucket) {
+  if (!bucket) return '';
+  if (bucket.high === Infinity) return `Pays $1 if valuation ≥ ${formatCurrency(bucket.low)}`;
+  return `Pays $1 if valuation in ${formatCurrency(bucket.low)}–${formatCurrency(bucket.high)} range`;
+}
+
+/**
+ * Find or create a bucket for a given value
+ * @param {number} value - The value to find a bucket for
+ * @param {Array} buckets - Current buckets array
+ * @returns {{bucket: Object, index: number, isNew: boolean}} - The bucket and its index
+ */
+export function findOrCreateBucket(value, buckets) {
+  // First try to find an existing bucket
+  const exactMatch = buckets.find(b => Math.abs(b.center - value) < 1e-6);
+  if (exactMatch) {
+    return { bucket: exactMatch, index: buckets.indexOf(exactMatch), isNew: false };
+  }
+  
+  // If no exact match, create a new bucket
+  const newBucket = {
+    low: value,
+    high: value * 1.1, // Default 10% range for single-point buckets
+    center: value,
+    idx: buckets.length,
+    isCustom: true
+  };
+  
+  // Insert in sorted order
+  let insertIndex = 0;
+  while (insertIndex < buckets.length && buckets[insertIndex].center < value) {
+    insertIndex++;
+  }
+  
+  // Add to buckets array
+  buckets.splice(insertIndex, 0, newBucket);
+  
+  // Update indices
+  buckets.forEach((b, i) => { b.idx = i; });
+  
+  return { bucket: newBucket, index: insertIndex, isNew: true };
+}
+
+/**
  * Generate repeating log-decade bucket grid: 5, 10, 25, 50 x 10^n, up to $1T
  * @returns {Array<{low: number, high: number, center: number, idx: number}>}
  */

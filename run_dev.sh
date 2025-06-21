@@ -185,14 +185,15 @@ if [ ! -d "node_modules" ]; then
     }
 fi
 if [ "$(uname)" == "Darwin" ]; then
-    # macOS - warn if path contains spaces and print manual instructions
-    if [[ "$PWD" == *" "* ]]; then
-        echo -e "${YELLOW}Warning: Your project path contains spaces, which breaks automatic frontend launch on macOS.${NC}"
-        echo -e "Please open a new terminal and run the following commands manually:"
-        echo -e "\n  cd '$PWD'"
-        echo -e "  npm start\n"
-    else
-        osascript -e 'tell app "Terminal" to do script "cd '"'"'"$PWD"'"'"' && npm start"'
+    # macOS - start frontend in background
+    echo -e "${GREEN}Starting frontend server in background...${NC}"
+    npm start > "$PROJECT_ROOT/logs/frontend.log" 2>&1 &
+    FRONTEND_PID=$!
+    sleep 2
+    if ! ps -p $FRONTEND_PID > /dev/null; then
+        echo -e "\n${YELLOW}⚠️  Could not auto-start frontend. Please open a NEW Terminal window and run:${NC}"
+        echo -e "\n  ${GREEN}cd \"$FRONTEND_DIR\" && npm start${NC}\n"
+        echo -e "The frontend should then be available at ${GREEN}http://localhost:3000${NC}"
     fi
 elif [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
     # Linux
@@ -210,10 +211,10 @@ section "Running Login Test"
 
 echo -e "${GREEN}Testing login with test credentials...${NC}"
 echo "Username: test"
-echo "Password: test"
+echo "Password: test123"
 LOGIN_RESPONSE=$(curl -s -X POST http://localhost:8000/token \
     -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "username=test&password=test" 2>/dev/null)
+    -d "username=test&password=test123" 2>/dev/null)
 
 if [[ $LOGIN_RESPONSE == *"access_token"* ]]; then
     echo -e "${GREEN}✓ Login test successful${NC}

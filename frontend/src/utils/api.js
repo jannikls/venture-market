@@ -39,10 +39,32 @@ export const getMarketDetail = async (id) => {
   return fetchWithAuth(`/markets/${id}`);
 };
 
-export const quoteAndTrade = async (id, val, dir, n, T, execute = false) => {
+export const quoteAndTrade = async (id, val, dir, n, T, user_id, execute = false) => {
   return fetchWithAuth(`/markets/${id}/quote_and_trade`, {
     method: 'POST',
-    body: JSON.stringify({ val, dir, n, T, user_id: 1, execute }), // TODO: wire user_id from auth
+    body: JSON.stringify({ val, dir, n, T, user_id, execute }),
+  });
+};
+
+export const getWalletBalance = async (user_id) => {
+  return fetchWithAuth(`/wallet/balance?user_id=${user_id}`);
+};
+
+export const faucet = async (user_id, amt) => {
+  return fetchWithAuth(`/faucet?user_id=${user_id}&amt=${amt}`);
+};
+
+export const depositIntent = async (user_id) => {
+  return fetchWithAuth(`/depositIntent`, {
+    method: 'POST',
+    body: JSON.stringify({ user_id }),
+  });
+};
+
+export const withdraw = async (user_id, amt) => {
+  return fetchWithAuth(`/withdraw`, {
+    method: 'POST',
+    body: JSON.stringify({ user_id, amt }),
   });
 };
 

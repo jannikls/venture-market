@@ -17,13 +17,26 @@ import {
   Chart as ChartJS,
   CategoryScale,
   LinearScale,
+  LogarithmicScale,
   PointElement,
   LineElement,
   Title,
   Tooltip,
   Legend,
 } from 'chart.js';
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend);
+import { getWalletBalance, faucet } from './utils/api';
+
+// Register Chart.js components (must be after all imports)
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  LogarithmicScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend
+);
 
 function App() {
   // Global app state
@@ -31,9 +44,44 @@ function App() {
   const { user, logout } = useAuth();
   const [anchorEl, setAnchorEl] = useState(null);
   const navigate = useNavigate();
+  const [balance, setBalance] = useState(null);
+  const [faucetLoading, setFaucetLoading] = useState(false);
 
   const showSnackbar = (message, severity = 'info') => {
     setSnackbar({ open: true, message, severity });
+  };
+
+  // Fetch wallet balance when user logs in
+  React.useEffect(() => {
+    const fetchBalance = async () => {
+      if (user && user.id) {
+        try {
+          const res = await getWalletBalance(user.id);
+          setBalance(res.balance);
+        } catch (e) {
+          setBalance(null);
+        }
+      } else {
+        setBalance(null);
+      }
+    };
+    fetchBalance();
+  }, [user]);
+
+  const handleFaucet = async () => {
+    if (!user || !user.id) return;
+    setFaucetLoading(true);
+    try {
+      const res = await faucet(user.id, 500);
+      showSnackbar(`Faucet: +${res.credited} play-money`, 'success');
+      // Refresh balance
+      const bal = await getWalletBalance(user.id);
+      setBalance(bal.balance);
+    } catch (e) {
+      showSnackbar(e.message || 'Faucet error', 'error');
+    } finally {
+      setFaucetLoading(false);
+    }
   };
 
   const handleCloseSnackbar = () => {
@@ -65,7 +113,22 @@ function App() {
             </RouterLink>
           </Typography>
           {user ? (
-            <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', mr: 2 }}>
+                <Typography variant="body2" sx={{ color: 'white', mr: 1 }}>
+                  Balance: <b>${balance !== null ? balance.toFixed(2) : '—'}</b>
+                </Typography>
+                <Button
+                  color="secondary"
+                  size="small"
+                  variant="contained"
+                  sx={{ minWidth: 0, px: 1, py: 0.5 }}
+                  onClick={handleFaucet}
+                  disabled={faucetLoading}
+                >
+                  Faucet
+                </Button>
+              </Box>
               <IconButton
                 size="large"
                 aria-label="account of current user"

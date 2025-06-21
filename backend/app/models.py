@@ -5,6 +5,13 @@ import datetime
 
 Base = declarative_base()
 
+# Import PlayWallet models for Base metadata registration
+try:
+    from .play_wallet import Balance, TxLog
+except ImportError:
+    Balance = None
+    TxLog = None
+
 class User(Base):
     __tablename__ = "users"
 
