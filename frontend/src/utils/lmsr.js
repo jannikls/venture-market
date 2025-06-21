@@ -8,8 +8,58 @@
  * @param {number} bucketWidth - Width of each bucket in log10 space (e.g. 0.7)
  * @returns {Array<{low: number, high: number, center: number, idx: number}>}
  */
-// Use fixed bucket size (e.g. $5M)
-export const BUCKET_SIZE = 5_000_000; // Change this value to adjust bucket size
+// Repeating log-decade sequence: 5, 10, 25, 50 (millions, billions, etc.)
+export const LOG_BUCKET_PATTERN = [5, 10, 25, 50];
+export const LOG_BUCKET_BASE = 1e6; // Start at $1M
+export const LOG_BUCKET_MAX = 1e12; // $1T
+
+/**
+ * Generate repeating log-decade bucket grid: 5, 10, 25, 50 x 10^n, up to $1T
+ * @returns {Array<{low: number, high: number, center: number, idx: number}>}
+ */
+export function makeLogBuckets(min = 5e6, max = LOG_BUCKET_MAX) {
+  const buckets = [];
+  let val = min;
+  let idx = 0;
+  let decade = 0;
+  while (val < max) {
+    for (let i = 0; i < LOG_BUCKET_PATTERN.length; i++) {
+      const mult = LOG_BUCKET_PATTERN[i] * Math.pow(10, decade);
+      const low = mult * LOG_BUCKET_BASE;
+      const high = (i < LOG_BUCKET_PATTERN.length - 1)
+        ? LOG_BUCKET_PATTERN[i + 1] * Math.pow(10, decade) * LOG_BUCKET_BASE
+        : LOG_BUCKET_PATTERN[0] * Math.pow(10, decade + 1) * LOG_BUCKET_BASE;
+      const center = (low + high) / 2;
+      if (low >= min && low < max) {
+        buckets.push({ low, high, center, idx });
+        idx++;
+      }
+      val = high;
+      if (val >= max) break;
+    }
+    decade++;
+  }
+  return buckets;
+}
+
+/**
+ * Find the bucket index for a given value, auto-extend if needed
+ * @param {number} val - Valuation
+ * @param {Array} buckets - Current bucket grid
+ * @param {number} max - Upper bound for extension (default $1T)
+ * @returns {number} idx
+ */
+export function quoteBucket(val, buckets, max = LOG_BUCKET_MAX) {
+  // Extend buckets if val > current max
+  let last = buckets[buckets.length - 1];
+  while (val >= last.high && last.high < max) {
+    const extended = makeLogBuckets(last.high, last.high * 10);
+    buckets.push(...extended);
+    last = buckets[buckets.length - 1];
+  }
+  return buckets.findIndex(bk => val >= bk.low && val < bk.high);
+}
+
 
 /**
  * Generate a realistic prior probability distribution (log-normal-like, peaked around median)
@@ -40,18 +90,6 @@ export function bayesianEvidenceTrade(p, p_yes, p_no, c, b) {
   return p.map((pi, i) => b * Math.log((p_prime[i] + 1e-12) / (pi + 1e-12)));
 }
 
-export function makeBuckets(min, max, bucketSize = BUCKET_SIZE) {
-  // Round min and max to nearest bucket edges
-  const start = Math.floor(min / bucketSize) * bucketSize;
-  const end = Math.ceil(max / bucketSize) * bucketSize;
-  const buckets = [];
-  for (let low = start, i = 0; low < end; low += bucketSize, i++) {
-    const high = low + bucketSize;
-    const center = low + bucketSize / 2;
-    buckets.push({ low, high, center, idx: i });
-  }
-  return buckets;
-}
 
 
 /**

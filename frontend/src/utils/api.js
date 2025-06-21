@@ -38,3 +38,25 @@ export const getMarkets = async () => {
 export const getMarketDetail = async (id) => {
   return fetchWithAuth(`/markets/${id}`);
 };
+
+export const quoteAndTrade = async (id, val, dir, n, T, execute = false) => {
+  return fetchWithAuth(`/markets/${id}/quote_and_trade`, {
+    method: 'POST',
+    body: JSON.stringify({ val, dir, n, T, user_id: 1, execute }), // TODO: wire user_id from auth
+  });
+};
+
+export const getMarketBidAsk = async (id) => {
+  return fetchWithAuth(`/markets/${id}/bid_ask`);
+};
+
+export const getMarketAMMState = async (id) => {
+  return fetchWithAuth(`/markets/${id}/amm_state`);
+};
+
+export const placeMarketOrder = async (id, bucket_idx, side, size, order_type, limit_price = null) => {
+  return fetchWithAuth(`/markets/${id}/order`, {
+    method: 'POST',
+    body: JSON.stringify({ bucket_idx, side, size, order_type, limit_price }),
+  });
+};

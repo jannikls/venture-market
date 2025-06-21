@@ -133,10 +133,32 @@ def get_market_detail(market_id: int, db: Session = Depends(get_db)):
     market = db.query(models.Market).filter(models.Market.id == market_id).first()
     if not market:
         raise HTTPException(status_code=404, detail="Market not found")
+    
+    # Ensure required fields have defaults
+    if market.outcome_min is None:
+        market.outcome_min = 5e6
+    if market.outcome_max is None:
+        market.outcome_max = 1e12
+    if not getattr(market, "status", None):
+        market.status = "open"
+    if not getattr(market, "created_at", None):
+        from datetime import datetime
+        market.created_at = datetime.utcnow()
+    
+    # Initialize AMM state if it doesn't exist
+    try:
+        from .amm_state import get_amm_state
+        min_val = market.outcome_min or 5e6
+        max_val = market.outcome_max or 1e12
+        get_amm_state(market_id, N=21, min_val=min_val, max_val=max_val)
+    except Exception as e:
+        print(f"Warning: Could not initialize AMM state: {e}")
+    
     # Calculate liquidity and traders
     bets = db.query(models.Bet).filter(models.Bet.market_id == market_id).all()
     liquidity = sum(bet.amount for bet in bets)
     traders = len(set(bet.user_id for bet in bets))
+    
     # Return market fields plus liquidity and traders
     market_data = {
         **schemas.MarketRead.from_orm(market).dict(),
@@ -145,20 +167,213 @@ def get_market_detail(market_id: int, db: Session = Depends(get_db)):
     }
     return market_data
 
-# Bets
-@router.post("/bets/", response_model=schemas.BetRead)
-def place_bet(bet: schemas.BetCreate, db: Session = Depends(get_db)):
+# --- QUOTE API ---
+from . import lmsr
+from .amm_state import get_amm_state, insert_knot
+from .threshold_contracts import payoff_vector, price_per_contract
+from .implied_distribution import lmsr_lognormal_pareto
+from .lmsr_bid_ask import lmsr_bid_ask
+from .amm_orders import place_order, set_amm_state, get_amm_state
+import math
+
+@router.get("/markets/{market_id}/bid_ask")
+def get_market_bid_ask(market_id: int, db: Session = Depends(get_db)):
+    """
+    Returns for each knot: value, mid, bid, ask using LMSR AMM state for the market.
+    Initializes AMM state if it doesn't exist.
+    """
+    market = db.query(models.Market).filter(models.Market.id == market_id).first()
+    if not market:
+        raise HTTPException(status_code=404, detail="Market not found")
+    
+    min_val = market.outcome_min or 5e6
+    max_val = market.outcome_max or 1e12  # Fallback if not set
+    N = 21  # Number of buckets
+    
+    try:
+        # This will initialize AMM state if it doesn't exist
+        state = get_amm_state(market_id, N, min_val, max_val)
+        if not state or 'knots' not in state:
+            raise ValueError("Invalid AMM state")
+            
+        knots = state['knots']
+        b = state['b']
+        q = [k['q'] for k in knots]
+        
+        # Ensure we have valid bid/ask data
+        if not q or not all(isinstance(x, (int, float)) for x in q):
+            q = [0.0] * len(knots)
+            
+        ba = lmsr_bid_ask(q, b)
+        
+        # Ensure we have valid bid/ask values
+        result = []
+        for i, k in enumerate(knots):
+            result.append({
+                'value': k['x'], 
+                'mid': ba[i].get('mid', 0.0) if i < len(ba) else 0.0,
+                'bid': ba[i].get('bid', 0.0) if i < len(ba) else 0.0,
+                'ask': ba[i].get('ask', 0.0) if i < len(ba) else 0.0
+            })
+            
+        return result
+        
+    except Exception as e:
+        print(f"Error in get_market_bid_ask: {e}")
+        # Return empty bid/ask data if there's an error
+        return [{
+            'value': 0.0,
+            'mid': 0.0,
+            'bid': 0.0,
+            'ask': 0.0
+        }]
+    return result
+
+from fastapi import Body
+
+@router.post("/markets/{market_id}/order")
+def place_market_order(
+    market_id: int,
+    bucket_idx: int = Body(...),
+    side: str = Body(...),
+    size: float = Body(...),
+    order_type: str = Body(...),
+    limit_price: float = Body(None)
+):
+    """
+    Place a market or limit order at a specific bucket (valuation index).
+    """
+    result = place_order(market_id, bucket_idx, side, size, order_type, limit_price)
+    return result
+
+@router.get("/markets/{market_id}/quote")
+def get_market_quote(market_id: int, val: float, db: Session = Depends(get_db)):
+    # --- CONTINUOUS AMM LOGIC ---
+    market = db.query(models.Market).filter(models.Market.id == market_id).first()
+    if not market:
+        raise HTTPException(status_code=404, detail="Market not found")
+    min_val = market.outcome_min or 5e6
+    max_val = market.outcome_max or lmsr.LOG_BUCKET_MAX
+    N = 21
+    state = get_amm_state(market_id, N, min_val, max_val)
+    insert_knot(state, val)
+    knots = state['knots']
+    b = state['b']
+    q = [k['q'] for k in knots]
+    prices = lmsr_prices_sparse(q, b)
+    pk = prices[idx]
+    low_idx = max(0, idx - 1)
+    high_idx = min(len(knots) - 1, idx + 1)
+    payout_low = prices[low_idx]
+    payout_high = prices[high_idx]
+    return {
+        'knot': knots[idx],
+        'price': pk,
+        'payouts': {
+            'low': payout_low,
+            'base': pk,
+            'high': payout_high,
+        },
+        'b': b,
+        'N': len(knots)
+    }
+
+@router.get("/markets/{market_id}/amm_state")
+def get_market_amm_state(market_id: int):
+    from .amm_state import get_amm_state
+    # Use default grid for now
+    N = 21
+    min_val = 5e6
+    max_val = 1e12
+    state = get_amm_state(market_id, N, min_val, max_val)
+    q = [k['q'] for k in state['knots']]
+    b = state['b']
+    return {'q': q, 'b': b}
+
+# Unified quote_and_trade endpoint for threshold contracts
+from fastapi import Body
+from datetime import datetime
+
+@router.post("/markets/{market_id}/quote_and_trade")
+def quote_and_trade(
+    market_id: int,
+    val: float = Body(...),
+    dir: str = Body(...),
+    n: float = Body(...),
+    T: str = Body(...),
+    user_id: int = Body(...),
+    execute: bool = Body(False),
+    db: Session = Depends(get_db),
+):
+    # Lookup market and AMM state
+    market = db.query(models.Market).filter(models.Market.id == market_id).first()
+    if not market:
+        raise HTTPException(status_code=404, detail="Market not found")
+    min_val = market.outcome_min or 5e6
+    max_val = market.outcome_max or lmsr.LOG_BUCKET_MAX
+    N = 21
+    state = get_amm_state(market_id, N, min_val, max_val)
+    insert_knot(state, val)
+    knots = state['knots']
+    b = state['b']
+    q = [k['q'] for k in knots]
+    # Construct payoff vector
+    w = payoff_vector(knots, val, dir)
+    # Current prices
+    def lmsr_cost_sparse(q, b):
+        max_q = max(q)
+        sum_exp = sum(math.exp((qk - max_q) / b) for qk in q)
+        return b * (math.log(sum_exp) + max_q / b)
+    def lmsr_prices_sparse(q, b):
+        max_q = max(q)
+        exp_q = [math.exp((qk - max_q) / b) for qk in q]
+        sum_exp = sum(exp_q)
+        return [e / sum_exp for e in exp_q]
+    prices = lmsr_prices_sparse(q, b)
+    p = price_per_contract(prices, w)
+    # Implied scenario payouts
+    scenario = lmsr_lognormal_pareto(prices, knots, val)
+    # Quote only (no trade): return price and scenario
+    if not execute:
+        return {"price": p, "b": b, "N": len(knots), "scenario": scenario, "probs": prices}
+    # Trade: Δq = n · w
+    q_before = q[:]
+    delta_q = [n * wk for wk in w]
+    q_after = [qk + dqk for qk, dqk in zip(q, delta_q)]
+    payment = lmsr_cost_sparse(q_after, b) - lmsr_cost_sparse(q_before, b)
+    # Update AMM state
+    for i in range(len(knots)):
+        knots[i]['q'] = q_after[i]
+    # Store contract as Bet
     db_bet = models.Bet(
-        user_id=bet.user_id,
-        market_id=bet.market_id,
-        amount=bet.amount,
-        prediction=bet.prediction,
+        user_id=user_id,
+        market_id=market_id,
+        amount=n,
+        prediction={"val": val, "dir": dir, "expiry": T},
+        placed_at=datetime.utcnow()
     )
     db.add(db_bet)
     db.commit()
     db.refresh(db_bet)
-    return db_bet
+    return {"price": p, "payment": payment, "bet_id": db_bet.id, "b": b, "N": len(knots)}
 
 @router.get("/bets/", response_model=list[schemas.BetRead])
 def list_bets(db: Session = Depends(get_db)):
     return db.query(models.Bet).all()
+
+# Leaderboard (P&L)
+@router.get("/leaderboard")
+def leaderboard(db: Session = Depends(get_db)):
+    users = db.query(models.User).all()
+    starting_balance = 1000.0
+    ranked = [
+        {
+            "username": u.username,
+            "display_name": u.display_name,
+            "balance": u.balance,
+            "pnl": u.balance - starting_balance,
+        }
+        for u in users
+    ]
+    ranked = sorted(ranked, key=lambda x: x["pnl"], reverse=True)
+    return ranked

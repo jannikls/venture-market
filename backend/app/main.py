@@ -1,7 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from . import models
-from .db import engine
+from .db import engine, SessionLocal
 from .api import router
 
 app = FastAPI()
@@ -53,6 +54,27 @@ seed_sample_data()
 
 app.include_router(router)
 
-@app.get("/")
-def read_root():
-    return {"message": "Venture Prediction Market API"}
+# Global OPTIONS handler for CORS preflight
+@app.options("/{rest_of_path:path}")
+def preflight_handler(rest_of_path: str):
+    from fastapi.responses import Response
+    return Response(status_code=200)
+
+@app.get("/", tags=["Health"])
+async def read_root():
+    return {"message": "Venture Prediction Market API is running"}
+
+@app.get("/health", status_code=status.HTTP_200_OK, tags=["Health"])
+async def health_check():
+    """Health check endpoint for load balancers and monitoring."""
+    try:
+        # Test database connection
+        db = SessionLocal()
+        db.execute("SELECT 1")
+        db.close()
+        return {"status": "healthy", "database": "connected"}
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "unhealthy", "error": str(e)}
+        )

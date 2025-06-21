@@ -41,30 +41,53 @@ export const AuthProvider = ({ children }) => {
   }, [token, logout]);
 
   const login = async (username, password) => {
+    console.log('Attempting login with username:', username);
     try {
       const formData = new URLSearchParams();
       formData.append('username', username);
       formData.append('password', password);
       
-      const response = await fetch('http://127.0.0.1:8000/token', {
+      console.log('Sending login request to /token endpoint');
+      const tokenUrl = 'http://127.0.0.1:8000/token';
+      const response = await fetch(tokenUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: formData,
       });
 
+      const responseText = await response.text();
+      console.log('Login response status:', response.status);
+      console.log('Login response text:', responseText);
+
       if (!response.ok) {
-        throw new Error('Login failed');
+        throw new Error(`Login failed: ${response.status} ${response.statusText}`);
       }
 
-      const data = await response.json();
+      let data;
+      try {
+        data = JSON.parse(responseText);
+        console.log('Login successful, token received');
+      } catch (e) {
+        console.error('Failed to parse login response:', e);
+        throw new Error('Invalid response from server');
+      }
+
       localStorage.setItem('token', data.access_token);
       setToken(data.access_token);
       
       // Fetch user data
+      console.log('Fetching user data...');
       const userResponse = await fetch('http://127.0.0.1:8000/users/me', {
         headers: { 'Authorization': `Bearer ${data.access_token}` }
       });
+      
+      if (!userResponse.ok) {
+        console.error('Failed to fetch user data:', userResponse.status);
+        throw new Error('Failed to load user data');
+      }
+      
       const userData = await userResponse.json();
+      console.log('User data loaded:', userData);
       setUser(userData);
       
       return { success: true };

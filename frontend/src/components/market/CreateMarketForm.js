@@ -47,8 +47,8 @@ function CreateMarketForm({ onMarketCreated }) {
         title,
         description,
         outcome_type: outcomeType,
-        outcome_min: outcomeType === 'continuous' ? parseFloat(outcomeMin) : null,
-        outcome_max: outcomeType === 'continuous' ? parseFloat(outcomeMax) : null,
+        outcome_min: null,
+        outcome_max: null,
         outcome_categories: outcomeType === 'categorical' ? 
           outcomeCategories.split(',').map(c => c.trim()).filter(Boolean) : null,
       };
@@ -137,26 +137,7 @@ function CreateMarketForm({ onMarketCreated }) {
               ))}
             </TextField>
             
-            {outcomeType === 'continuous' && (
-              <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
-                <TextField 
-                  label="Min Value" 
-                  type="number" 
-                  value={outcomeMin} 
-                  onChange={e => setOutcomeMin(e.target.value)} 
-                  fullWidth 
-                  required 
-                />
-                <TextField 
-                  label="Max Value" 
-                  type="number" 
-                  value={outcomeMax} 
-                  onChange={e => setOutcomeMax(e.target.value)} 
-                  fullWidth 
-                  required 
-                />
-              </Box>
-            )}
+
             
             {outcomeType === 'categorical' && (
               <TextField 

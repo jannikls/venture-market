@@ -27,8 +27,8 @@ export default function OrderBookAndTrades({ orderBook, trades, buckets }) {
                 <TableRow><TableCell colSpan={4}>No orders</TableCell></TableRow>
               ) : orderBook.map((order, i) => (
                 <TableRow key={i}>
-                  <TableCell>{buckets[order.bucket]?.low.toLocaleString()} - {buckets[order.bucket]?.high.toLocaleString()}</TableCell>
-                  <TableCell>${order.price.toFixed(4)}</TableCell>
+                  <TableCell>{order.bucket != null && buckets[order.bucket] ? `${buckets[order.bucket].low.toLocaleString()} - ${buckets[order.bucket].high.toLocaleString()}` : '-'}</TableCell>
+                  <TableCell>{order.price != null ? `$${order.price.toFixed(4)}` : '-'}</TableCell>
                   <TableCell>{order.size}</TableCell>
                   <TableCell>{order.side}</TableCell>
                 </TableRow>
@@ -58,8 +58,8 @@ export default function OrderBookAndTrades({ orderBook, trades, buckets }) {
                 <TableRow key={i}>
                   <TableCell>{trade.time}</TableCell>
                   <TableCell>{trade.user}</TableCell>
-                  <TableCell>{buckets[trade.bucket]?.low.toLocaleString()} - {buckets[trade.bucket]?.high.toLocaleString()}</TableCell>
-                  <TableCell>${trade.price.toFixed(4)}</TableCell>
+                  <TableCell>{trade.bucket != null && buckets[trade.bucket] ? `${buckets[trade.bucket].low.toLocaleString()} - ${buckets[trade.bucket].high.toLocaleString()}` : '-'}</TableCell>
+                  <TableCell>{trade.price != null ? `$${trade.price.toFixed(4)}` : '-'}</TableCell>
                   <TableCell>{trade.size}</TableCell>
                   <TableCell>{trade.side}</TableCell>
                 </TableRow>
